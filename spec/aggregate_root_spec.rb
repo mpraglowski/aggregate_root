@@ -3,6 +3,91 @@ require 'spec_helper'
 describe AggregateRoot do
   let(:event_store) { RubyEventStore::Client.new(repository: RubyEventStore::InMemoryRepository.new) }
 
+  module Orders
+    module Events
+      OrderCreated = Class.new(RubyEventStore::Event)
+      OrderExpired = Class.new(RubyEventStore::Event)
+    end
+  end
+
+  class Order
+    include AggregateRoot.new(event_store: event_store)
+
+    def initialize
+      @status = :draft
+    end
+
+    def expected_events
+      unpublished_events
+    end
+
+    attr_accessor :status
+    private
+
+    def apply_order_created(event)
+      @status = :created
+    end
+
+    def apply_order_expired(event)
+      @status = :expired
+    end
+  end
+
+  class OrderWithoutEventStoreAssigned
+    include AggregateRoot.new
+
+    def initialize
+      @status = :draft
+    end
+
+    def expected_events
+      unpublished_events
+    end
+
+    attr_accessor :status
+    private
+
+    def apply_order_created(event)
+      @status = :created
+    end
+
+    def apply_order_expired(event)
+      @status = :expired
+    end
+  end
+
+  class CustomOrderApplyStrategy
+    def call(aggregate, event)
+      {
+        Orders::Events::OrderCreated => aggregate.method(:custom_created),
+        Orders::Events::OrderExpired => aggregate.method(:custom_expired),
+      }.fetch(event.class, ->(ev) {}).call(event)
+    end
+  end
+
+  class OrderWithCustomStrategy
+    include AggregateRoot.new(event_store: event_store, strategy: CustomOrderApplyStrategy.new)
+
+    def initialize
+      @status = :draft
+    end
+
+    def expected_events
+      unpublished_events
+    end
+
+    attr_accessor :status
+    private
+
+    def custom_created(event)
+      @status = :created
+    end
+
+    def custom_expired(event)
+      @status = :expired
+    end
+  end
+
   it "should have ability to apply event on itself" do
     order = Order.new
     order_created = Orders::Events::OrderCreated.new
@@ -43,12 +128,8 @@ describe AggregateRoot do
   end
 
   it "should work with provided event_store" do
-    AggregateRoot.configure do |config|
-      config.default_event_store = double(:some_other_event_store)
-    end
-
     stream = "any-order-stream"
-    order = Order.new.load(stream, event_store: event_store)
+    order = OrderWithoutEventStoreAssigned.new.load(stream, event_store: event_store)
     order_created = Orders::Events::OrderCreated.new
     order.apply(order_created)
     order.store(stream, event_store: event_store)
@@ -68,10 +149,6 @@ describe AggregateRoot do
   end
 
   it "should use default client if event_store not provided" do
-    AggregateRoot.configure do |config|
-      config.default_event_store = event_store
-    end
-
     stream = "any-order-stream"
     order = Order.new.load(stream)
     order_created = Orders::Events::OrderCreated.new
@@ -93,10 +170,6 @@ describe AggregateRoot do
   end
 
   it "if loaded from some stream should store to the same stream is no other stream specified" do
-    AggregateRoot.configure do |config|
-      config.default_event_store = event_store
-    end
-
     stream = "any-order-stream"
     order = Order.new.load(stream)
     order_created = Orders::Events::OrderCreated.new
