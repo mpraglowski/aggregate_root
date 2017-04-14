@@ -1,7 +1,22 @@
 require 'spec_helper'
 
+module Setup
+  def self.event_store
+    @@event_store ||= RubyEventStore::Client.new(
+      repository: RubyEventStore::InMemoryRepository.new)
+  end
+
+  def self.reset!
+    @@event_store = nil
+  end
+end
+
 describe AggregateRoot do
-  let(:event_store) { RubyEventStore::Client.new(repository: RubyEventStore::InMemoryRepository.new) }
+  let(:event_store) { Setup.event_store }
+  before(:each) do
+    Setup.reset!
+    AggregateRoot.configuration = nil
+  end
 
   module Orders
     module Events
@@ -11,7 +26,7 @@ describe AggregateRoot do
   end
 
   class Order
-    include AggregateRoot.new(event_store: event_store)
+    include AggregateRoot.new(event_store: Setup.event_store)
 
     def initialize
       @status = :draft
@@ -66,7 +81,7 @@ describe AggregateRoot do
   end
 
   class OrderWithCustomStrategy
-    include AggregateRoot.new(event_store: event_store, strategy: CustomOrderApplyStrategy.new)
+    include AggregateRoot.new(event_store: Setup.event_store, strategy: CustomOrderApplyStrategy.new)
 
     def initialize
       @status = :draft
@@ -149,15 +164,18 @@ describe AggregateRoot do
   end
 
   it "should use default client if event_store not provided" do
+    AggregateRoot.configure do |config|
+      config.default_event_store = event_store
+    end
     stream = "any-order-stream"
-    order = Order.new.load(stream)
+    order = OrderWithoutEventStoreAssigned.new.load(stream)
     order_created = Orders::Events::OrderCreated.new
     order.apply(order_created)
     order.store(stream)
 
     expect(event_store.read_stream_events_forward(stream)).to eq [order_created]
 
-    restored_order = Order.new.load(stream)
+    restored_order = OrderWithoutEventStoreAssigned.new.load(stream)
     expect(restored_order.status).to eq :created
     order_expired = Orders::Events::OrderExpired.new
     restored_order.apply(order_expired)
@@ -165,16 +183,16 @@ describe AggregateRoot do
 
     expect(event_store.read_stream_events_forward(stream)).to eq [order_created, order_expired]
 
-    restored_again_order = Order.new.load(stream)
+    restored_again_order = OrderWithoutEventStoreAssigned.new.load(stream)
     expect(restored_again_order.status).to eq :expired
   end
 
   it "if loaded from some stream should store to the same stream is no other stream specified" do
     stream = "any-order-stream"
-    order = Order.new.load(stream)
+    order = Order.new.load(stream, event_store: event_store)
     order_created = Orders::Events::OrderCreated.new
     order.apply(order_created)
-    order.store
+    order.store(event_store: event_store)
 
     expect(event_store.read_stream_events_forward(stream)).to eq [order_created]
   end

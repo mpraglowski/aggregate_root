@@ -2,23 +2,33 @@ require 'active_support/inflector'
 require 'aggregate_root/version'
 
 class AggregateRoot < Module
-  def initialize(strategy: DefaultApplyStrategy.new, event_store: nil)
+  def initialize(strategy: DefaultApplyStrategy.new,
+                 event_store: nil)
     @strategy = strategy
     @event_store = event_store
     define_methods
     freeze
   end
 
+  class << self
+    attr_accessor :configuration
+  end
+
+  def self.configure
+    self.configuration ||= Configuration.new
+    yield(configuration)
+  end
+
   private
+  class Configuration
+    attr_accessor :default_event_store
+  end
+
   class DefaultApplyStrategy
     def call(aggregate, event)
       event_name_processed = event.class.name.demodulize.underscore
       aggregate.method("apply_#{event_name_processed}").call(event)
     end
-  end
-
-  class Configuration
-    attr_accessor :default_event_store
   end
 
   def included(descendant)
@@ -41,7 +51,7 @@ class AggregateRoot < Module
   def define_default_event_store
     event_store = @event_store
     define_method(:default_event_store) do | |
-      event_store
+      event_store || AggregateRoot.configuration&.default_event_store
     end
   end
 
